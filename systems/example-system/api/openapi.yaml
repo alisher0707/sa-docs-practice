@@ -2,7 +2,7 @@
 openapi: 3.0.3
 info:
   title: Example Client Info API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Пример системы для демонстрации структуры репозитория.
     Предоставляет партнёрам сведения о клиенте-юрлице или ИП и его счетах.
@@ -145,6 +145,7 @@ components:
           enum: [MALE, FEMALE, UNKNOWN]
           description: Пол руководителя (для ИП — пол самого ИП)
         registeredAt: { type: string, format: date }
+        middleName: { type: string, description: Отчество руководителя }
 
     Account:
       type: object

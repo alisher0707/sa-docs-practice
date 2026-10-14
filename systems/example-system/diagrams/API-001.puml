@@ -1,0 +1,24 @@
+@startuml
+title API-001 getClientInfo
+autonumber "<b>[00]"
+skinparam sequenceMessageAlign center
+
+participant "Partner" as partner
+participant "Example service" as svc
+participant "Core banking" as abs
+
+partner -> svc : GET /v1/clients/{clientId}\nX-API-Key, X-Correlation-Id
+svc -> svc : validate clientId (V-01)
+alt invalid clientId
+  svc --> partner : 422 VALIDATION_ERROR
+else valid clientId
+  svc -> abs : searchLegalClient / searchEntrepreneur (timeout 5 s)
+  alt client found
+    abs --> svc : client data
+    svc --> partner : 200 ClientInfo
+  else client not found
+    abs --> svc : not found
+    svc --> partner : 404 CLIENT_NOT_FOUND
+  end
+end
+@enduml

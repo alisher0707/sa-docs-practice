@@ -1,0 +1,65 @@
+# Проверки на каждый Pull Request и на каждый push в main.
+# Робот не даёт влить изменение, если хоть одна проверка красная
+# (включается в Settings → Branches → правило для main → Require status checks).
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # нужна история, чтобы сравнить с main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить зависимости
+        run: pip install --quiet pyyaml
+
+      - name: Стиль контрактов API (Spectral)
+        run: npx --yes @stoplight/spectral-cli@6 lint systems/*/api/*.yaml --ruleset .spectral.yaml --fail-severity=error
+
+      - name: Синтаксис моделей данных (DBML)
+        run: |
+          for f in systems/*/erd/*.dbml; do
+            echo "$f"
+            npx --yes -p @dbml/cli@3 dbml2sql "$f" --postgres > /dev/null
+          done
+
+      - name: Карточки методов и реестр
+        run: python3 scripts/build_registry.py --check
+
+      - name: Версия контракта поднята
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/check_version_bump.py origin/${{ github.base_ref }}
+
+  breaking-changes:
+    # Ломающие изменения API: удалили поле, сменили тип, добавили обязательный параметр.
+    # Отчёт виден в PR; если изменение ломающее — нужна новая major-версия (PROCESS.md, раздел 6).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Подготовить контракт из main для сравнения
+        run: |
+          mkdir -p base
+          git show origin/${{ github.base_ref }}:systems/example-system/api/openapi.yaml > base/openapi.yaml || cp systems/example-system/api/openapi.yaml base/openapi.yaml
+      - name: Поиск ломающих изменений (oasdiff)
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base/openapi.yaml
+          revision: systems/example-system/api/openapi.yaml
+          fail-on: ERR

@@ -1,0 +1,56 @@
+# «Ночная сверка»: документация в git против работающей системы.
+# Каждую ночь поднимает стенд (stand/), сверяет API и модель данных с документацией.
+# Нашлось расхождение → создаётся задача (Issue) с отчётом.
+# В банке: вместо stand/ — адрес тестового стенда и доступ к тестовой БД (переменные API_URL, PSQL, SKIP_STAND=1).
+name: drift
+
+on:
+  schedule:
+    - cron: "0 1 * * *"     # 06:00 по Ташкенту
+  workflow_dispatch:         # кнопка «Run workflow» для ручного запуска
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить инструменты сверки
+        run: pip install --quiet schemathesis pyyaml
+
+      - name: Сверка документации со стендом
+        id: drift
+        run: |
+          set -o pipefail
+          ./scripts/drift.sh --down 2>&1 | tee drift-report.txt
+
+      - name: Создать задачу о расхождении
+        if: failure() && steps.drift.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create drift --color B5470F --description "Документация разошлась с системой" --force
+          {
+            echo "Ночная сверка нашла расхождение между документацией и системой."
+            echo
+            echo "Что сделать: решить, кто прав, и исправить **документацию** (через PR) или **систему** (задача разработке)."
+            echo
+            echo '```'
+            tail -n 120 drift-report.txt
+            echo '```'
+            echo
+            echo "Запуск: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > issue.md
+          gh issue create --title "Расхождение документации и системы — $(date -u +%Y-%m-%d)" --body-file issue.md --label drift

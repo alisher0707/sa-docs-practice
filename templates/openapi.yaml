@@ -1,0 +1,422 @@
+# =====================================================================
+#  OpenAPI-шаблон (Swagger)  ·  файл в git: systems/<system>/api/openapi.yaml
+#
+#  КОНВЕНЦИИ
+#  - Версия API в пути (/v1). Ломающее изменение = /v2, старая версия
+#    живёт до согласованной даты (Deprecation / Sunset заголовки)
+#  - Имена: пути kebab-case во множественном числе, поля JSON camelCase
+#  - Деньги: { value: "1000.00", currency: "UZS" } — строка, не number
+#  - Даты: RFC 3339 с таймзоной (2026-10-09T08:35:00Z)
+#  - Все изменяющие методы принимают Idempotency-Key
+#  - Все методы принимают и возвращают X-Correlation-Id
+#  - Ошибки: единый формат Error (RFC 7807-подобный) + нормализованный code
+#  - Примеры: только синтетические данные; PAN только 6+4
+#  - Tags = папки в Apidog
+#  - Блоки EXAMPLE (ресурс entities) — заменить своим ресурсом
+# =====================================================================
+openapi: 3.0.3
+info:
+  title: <Service name> API
+  version: 0.1.0
+  description: |
+    **Назначение:** <что делает сервис, 1–2 предложения>.
+
+    **Связанные документы:** ТЗ <ТЗ-КОД-NN>, ERD `erd/<domain>.dbml`.
+
+    ### Идемпотентность
+    Для POST/PATCH/DELETE обязателен заголовок `Idempotency-Key` (UUIDv4).
+    Повтор с тем же ключом и тем же телом возвращает сохранённый ответ
+    без повторного выполнения. Тот же ключ с другим телом — `422 IDEMPOTENCY_KEY_REUSED`.
+    Пока первый запрос обрабатывается — `409 REQUEST_IN_PROGRESS`.
+    Ключ хранится <24 часа>.
+
+    ### Трассировка
+    `X-Correlation-Id` (UUIDv4) создаётся на точке входа и передаётся без изменений.
+    Если не передан — сервер генерирует и возвращает в ответе.
+
+    ### Таймауты и ретраи (для клиента)
+    Рекомендуемый таймаут клиента: <N> с. Ретраить можно только 409 REQUEST_IN_PROGRESS,
+    429, 502, 503, 504 и сетевые ошибки — с тем же Idempotency-Key и экспоненциальным backoff.
+    Источник истины по статусу операции — GET ресурса.
+
+    ### Лимиты
+    <N> запросов в секунду на клиента. При превышении — 429 с заголовком Retry-After.
+  contact:
+    name: <Команда-владелец>
+servers:
+  - url: https://api.example.local/<service>
+    description: Placeholder — реальные адреса окружений не публикуются в спецификации
+tags:
+  - name: Entities
+    description: EXAMPLE — операции с основным ресурсом
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/entities:
+    post:
+      tags: [Entities]
+      operationId: createEntity
+      summary: Создать сущность
+      description: |
+        <Описание бизнес-смысла>. Шаги алгоритма — ТЗ <ТЗ-КОД-NN>, п. 3.3.
+        Операция асинхронная по отношению к внешней системе: ответ может прийти
+        в статусе PENDING — клиент уточняет итог через GET.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEntityRequest'
+            examples:
+              basic:
+                summary: Типовой запрос
+                value:
+                  customerId: 6b0e2f3a-1c5d-4e8f-9a2b-3c4d5e6f7a8b
+                  amount: { value: "150000.00", currency: UZS }
+                  description: Оплата заказа 1024
+      responses:
+        '201':
+          description: Создано (финальный или промежуточный статус)
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+            Location:
+              description: URL созданного ресурса
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entity'
+              examples:
+                succeeded:
+                  summary: Успех
+                  value:
+                    id: 0d7c9e14-5a3b-4f21-8c6d-2e1f0a9b8c7d
+                    status: SUCCEEDED
+                    amount: { value: "150000.00", currency: UZS }
+                    maskedPan: 860031******1234
+                    createdAt: '2026-10-09T08:35:00Z'
+                    updatedAt: '2026-10-09T08:35:02Z'
+                pending:
+                  summary: Исход неизвестен — уточнить через GET
+                  value:
+                    id: 0d7c9e14-5a3b-4f21-8c6d-2e1f0a9b8c7d
+                    status: PENDING
+                    amount: { value: "150000.00", currency: UZS }
+                    createdAt: '2026-10-09T08:35:00Z'
+                    updatedAt: '2026-10-09T08:35:30Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    get:
+      tags: [Entities]
+      operationId: listEntities
+      summary: Список сущностей (курсорная пагинация)
+      description: Сортировка по createdAt по убыванию. Курсор непрозрачный — клиент не разбирает его структуру.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/EntityStatus' }
+        - name: createdFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: createdTo
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Страница результатов
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityPage'
+              example:
+                items:
+                  - id: 0d7c9e14-5a3b-4f21-8c6d-2e1f0a9b8c7d
+                    status: SUCCEEDED
+                    amount: { value: "150000.00", currency: UZS }
+                    createdAt: '2026-10-09T08:35:00Z'
+                    updatedAt: '2026-10-09T08:35:02Z'
+                nextCursor: eyJjIjoiMjAyNi0xMC0wOVQwODozNTowMFoifQ
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/entities/{entityId}:
+    get:
+      tags: [Entities]
+      operationId: getEntity
+      summary: Получить сущность — источник истины по статусу
+      description: Используйте этот метод для уточнения итога операции после таймаута или ответа PENDING.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/EntityId'
+      responses:
+        '200':
+          description: Найдено
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entity'
+              example:
+                id: 0d7c9e14-5a3b-4f21-8c6d-2e1f0a9b8c7d
+                status: SUCCEEDED
+                amount: { value: "150000.00", currency: UZS }
+                createdAt: '2026-10-09T08:35:00Z'
+                updatedAt: '2026-10-09T08:35:02Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/entities/{entityId}/cancel:
+    post:
+      tags: [Entities]
+      operationId: cancelEntity
+      summary: Отменить сущность
+      description: Допустимо только из статусов CREATED и PENDING; иначе 409 INVALID_STATE_TRANSITION.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/EntityId'
+      responses:
+        '200':
+          description: Отменено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entity'
+              example:
+                id: 0d7c9e14-5a3b-4f21-8c6d-2e1f0a9b8c7d
+                status: CANCELED
+                amount: { value: "150000.00", currency: UZS }
+                createdAt: '2026-10-09T08:35:00Z'
+                updatedAt: '2026-10-09T08:35:02Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token (OAuth 2.0 client credentials / OIDC). Scope — <service>:<action>
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: UUIDv4, сквозной идентификатор цепочки вызовов
+      schema: { type: string, format: uuid }
+      example: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUIDv4, генерирует вызывающая сторона и хранит до получения финального ответа
+      schema: { type: string, format: uuid }
+      example: 8b1d4c2e-6f7a-4b3c-9d0e-1a2b3c4d07aa
+    EntityId:
+      name: entityId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Непрозрачный курсор из nextCursor предыдущей страницы
+      schema: { type: string }
+
+  headers:
+    CorrelationId:
+      description: Эхо X-Correlation-Id (или сгенерированный сервером)
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Money:
+      type: object
+      required: [value, currency]
+      properties:
+        value:
+          type: string
+          pattern: '^\d{1,16}\.\d{2}$'
+          description: Сумма строкой, 2 знака после точки
+          example: "150000.00"
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217 alpha-3
+          example: UZS
+
+    EntityStatus:
+      type: string
+      enum: [CREATED, PENDING, SUCCEEDED, CANCELED]
+      description: |
+        CREATED — создана; PENDING — исход неизвестен, уточняется;
+        SUCCEEDED, CANCELED — финальные.
+
+    CreateEntityRequest:
+      type: object
+      required: [customerId, amount]
+      additionalProperties: false
+      properties:
+        customerId: { type: string, format: uuid }
+        amount: { $ref: '#/components/schemas/Money' }
+        description: { type: string, maxLength: 255 }
+
+    Entity:
+      type: object
+      required: [id, status, amount, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/EntityStatus' }
+        amount: { $ref: '#/components/schemas/Money' }
+        maskedPan:
+          type: string
+          pattern: '^\d{6}\*{6}\d{4}$'
+          description: Маскированный номер карты 6+4 (если применимо)
+        reasonCode:
+          type: string
+          description: Нормализованный код причины для CANCELED
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    EntityPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Entity' }
+        nextCursor:
+          type: string
+          nullable: true
+          description: null — страниц больше нет
+
+    Error:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code:
+          type: string
+          description: Нормализованный машиночитаемый код (UPPER_SNAKE_CASE)
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          description: Человекочитаемое описание; не содержит ПДн и внутренних деталей
+        correlationId: { type: string, format: uuid }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: amount.value }
+              issue: { type: string, example: must be greater than 0 }
+
+  responses:
+    BadRequest:
+      description: Некорректный формат запроса
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: MALFORMED_REQUEST, message: Request body is not valid JSON, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    Unauthorized:
+      description: Нет или невалиден токен
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: UNAUTHORIZED, message: Access token is missing or expired, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: FORBIDDEN, message: Insufficient scope, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    NotFound:
+      description: Ресурс не найден (или нет доступа к нему)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: NOT_FOUND, message: Entity not found, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    Conflict:
+      description: Конфликт состояния
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            inProgress:
+              summary: Запрос с этим Idempotency-Key ещё обрабатывается
+              value: { code: REQUEST_IN_PROGRESS, message: Retry later with the same Idempotency-Key, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+            invalidTransition:
+              summary: Недопустимый переход статуса
+              value: { code: INVALID_STATE_TRANSITION, message: Entity is in final status, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    Unprocessable:
+      description: Нарушены бизнес-правила или правила валидации
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            validation:
+              value:
+                code: VALIDATION_ERROR
+                message: Request validation failed
+                correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e
+                details:
+                  - { field: amount.value, issue: must be greater than 0 }
+            keyReused:
+              summary: Тот же Idempotency-Key с другим телом
+              value: { code: IDEMPOTENCY_KEY_REUSED, message: Idempotency-Key was used with a different request body, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    TooManyRequests:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          description: Через сколько секунд можно повторить
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: RATE_LIMIT_EXCEEDED, message: Too many requests, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    InternalError:
+      description: Внутренняя ошибка. Исход операции может быть неизвестен — проверить через GET
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: INTERNAL_ERROR, message: Unexpected error, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    ServiceUnavailable:
+      description: Сервис или зависимость недоступны — можно повторить с тем же Idempotency-Key
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: DEPENDENCY_UNAVAILABLE, message: Upstream system is unavailable, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }

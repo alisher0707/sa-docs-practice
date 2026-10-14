@@ -1,0 +1,42 @@
+// ПРИМЕР модели данных сервиса. Данные синтетические.
+Project example_system {
+  database_type: 'PostgreSQL'
+  Note: '''
+  **Сервис:** example-system · **Версия схемы:** 1.0.0 · **ТЗ:** TZ-EX-01
+  Сервис не хранит данные клиентов — только журнал обращений партнёров.
+  '''
+}
+
+Enum request_result {
+  OK
+  NOT_FOUND
+  VALIDATION_ERROR
+  DEPENDENCY_ERROR
+}
+
+Table partner {
+  id          uuid         [pk]
+  code        varchar(32)  [not null, unique, note: 'Код партнёра, используется в логах и отчётах']
+  name        varchar(255) [not null]
+  is_active   boolean      [not null, default: true]
+  created_at  timestamptz  [not null, default: `now()`]
+  Note: 'API-ключи хранятся в хранилище секретов, не в этой БД'
+}
+
+Table partner_request_log {
+  id              bigint          [pk, increment]
+  partner_id      uuid            [not null, ref: > partner.id]
+  operation_id    varchar(64)     [not null, note: 'operationId из OpenAPI']
+  client_id_mask  varchar(14)     [not null, note: '[PII] Маскированный ИНН/ПИНФЛ: 3 первые и 2 последние цифры']
+  result          request_result  [not null]
+  http_status     smallint        [not null]
+  duration_ms     int             [not null]
+  correlation_id  uuid            [not null]
+  created_at      timestamptz     [not null, default: `now()`]
+
+  indexes {
+    (partner_id, created_at)
+    correlation_id
+  }
+  Note: 'Срок хранения — 1 год (пример, требует подтверждения комплаенса)'
+}

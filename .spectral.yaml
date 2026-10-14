@@ -1,0 +1,157 @@
+# Правила стиля API банка для Spectral (https://github.com/stoplightio/spectral)
+# Это исполняемая часть регламента API-first: CI проверяет каждый контракт.
+# severity: error — блокирует PR; warn — замечание; info — подсказка.
+extends:
+  - spectral:oas
+
+rules:
+  # --- переопределения базового набора ---
+  info-contact: error
+  operation-tag-defined: error
+  operation-description: warn
+
+  # --- именование ---
+  operation-id-camel-case:
+    description: operationId — camelCase, начинается с глагола (getClientInfo)
+    severity: error
+    given: $.paths[*][get,post,put,patch,delete].operationId
+    then:
+      function: pattern
+      functionOptions:
+        match: '^[a-z][a-zA-Z0-9]+$'
+
+  path-kebab-case:
+    description: Сегменты пути — kebab-case, параметры в {camelCase}
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^(\/([a-z0-9]+(-[a-z0-9]+)*|\{[a-z][a-zA-Z0-9]*\}))+$'
+
+  path-version-prefix:
+    description: Путь начинается с версии API (/v1/…)
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^\/v\d+\/'
+
+  property-camel-case:
+    description: Поля JSON — camelCase
+    severity: error
+    given: $..properties
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^[a-z][a-zA-Z0-9]*$'
+
+  # --- надёжность и трассировка ---
+  mutating-requires-idempotency-key:
+    description: POST/PUT/PATCH/DELETE обязаны принимать заголовок Idempotency-Key
+    severity: error
+    given: $.paths[*][post,put,patch,delete]
+    then:
+      field: parameters
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          contains:
+            type: object
+            properties:
+              name: { const: Idempotency-Key }
+              in: { const: header }
+            required: [name, in]
+
+  operation-correlation-id:
+    description: Каждая операция принимает заголовок X-Correlation-Id
+    severity: warn
+    given: $.paths[*][get,post,put,patch,delete]
+    then:
+      field: parameters
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          contains:
+            type: object
+            properties:
+              name: { const: X-Correlation-Id }
+            required: [name]
+
+  operation-has-4xx:
+    description: Операция описывает хотя бы один ответ 4xx (ошибки — часть контракта)
+    severity: error
+    given: $.paths[*][get,post,put,patch,delete].responses
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          not:
+            propertyNames:
+              not:
+                pattern: '^4'
+
+  error-responses-use-error-schema:
+    description: Ответы 4xx/5xx возвращают единую схему Error (поля code, message, correlationId)
+    severity: error
+    given: $.paths[*][*].responses[?(@property.match(/^[45]/))].content.application/json.schema
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: [required]
+          properties:
+            required:
+              type: array
+              allOf:
+                - contains: { const: code }
+                - contains: { const: message }
+                - contains: { const: correlationId }
+
+  success-response-has-example:
+    description: У успешного ответа есть пример (example или examples)
+    severity: warn
+    given: $.paths[*][*].responses[?(@property.match(/^2/))].content.application/json
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          anyOf:
+            - required: [example]
+            - required: [examples]
+
+  # --- безопасность и данные ---
+  no-number-for-money:
+    description: Денежные суммы — строкой (Money.value), не number — иначе ошибки округления
+    severity: error
+    given: $..properties[?(@property.match(/^(amount|sum|balance|value|price|fee)$/i))]
+    then:
+      field: type
+      function: pattern
+      functionOptions:
+        notMatch: '^(number|integer)$'
+
+  servers-no-real-hosts:
+    description: В репозитории не публикуются реальные адреса окружений — только *.example.local
+    severity: error
+    given: $.servers[*].url
+    then:
+      function: pattern
+      functionOptions:
+        match: '^https:\/\/[a-z0-9.-]+\.example\.local(\/.*)?$'
+
+  security-defined:
+    description: Для API задана схема безопасности
+    severity: error
+    given: $
+    then:
+      field: security
+      function: truthy

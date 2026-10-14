@@ -1,0 +1,92 @@
+# Публикация документации при появлении метки версии.
+# Метка ставится при выходе изменения в прод:  git tag -a example-system-api-v1.2.0 -m "..." && git push --tags
+# Результат:
+#   1) сайт GitHub Pages с документацией API и номером версии в шапке
+#      (один раз: Settings → Pages → Source: GitHub Actions);
+#   2) страницы в Confluence с номером версии в шапке — если заданы секреты CONFLUENCE_*
+#      (Settings → Secrets and variables → Actions).
+name: release-docs
+
+on:
+  push:
+    tags: ["*-api-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Собрать документацию API (Redoc)
+        run: |
+          mkdir -p public
+          VERSION="${GITHUB_REF_NAME}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          for spec in systems/*/api/*.yaml; do
+            sys=$(echo "$spec" | cut -d/ -f2)
+            npx --yes @redocly/cli@1 build-docs "$spec" -o "public/$sys/index.html"
+          done
+          {
+            echo "<!doctype html><html lang=ru><meta charset=utf-8><title>Документация API</title>"
+            echo "<body style='font-family:system-ui;max-width:880px;margin:40px auto;padding:0 16px'>"
+            echo "<h1>Документация API</h1>"
+            echo "<p style='background:#DCE9F2;padding:12px 16px;border-left:6px solid #1E5F8C'>"
+            echo "Версия <b>${VERSION}</b> · ${DATE} · коммит ${COMMIT} · сгенерировано автоматически</p><ul>"
+            for d in public/*/; do s=$(basename "$d"); echo "<li><a href='$s/'>$s</a></li>"; done
+            echo "</ul></body></html>"
+          } > public/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  confluence:
+    runs-on: ubuntu-latest
+    env:
+      CONFLUENCE_URL: ${{ secrets.CONFLUENCE_URL }}
+      CONFLUENCE_DEPLOYMENT: ${{ secrets.CONFLUENCE_DEPLOYMENT }}
+      CONFLUENCE_SPACE: ${{ secrets.CONFLUENCE_SPACE }}
+      CONFLUENCE_USER: ${{ secrets.CONFLUENCE_USER }}
+      CONFLUENCE_TOKEN: ${{ secrets.CONFLUENCE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Опубликовать в Confluence
+        run: |
+          if [ -z "$CONFLUENCE_TOKEN" ]; then
+            echo "Секреты CONFLUENCE_* не заданы — публикация в Confluence пропущена"
+            exit 0
+          fi
+          pip install --quiet pyyaml markdown
+          python3 scripts/publish_confluence.py

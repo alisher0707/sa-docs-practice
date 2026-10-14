@@ -1,0 +1,31 @@
+# Учебный стенд: сервис example-system + его база данных.
+# На практике заменяет тестовый стенд банка.
+#   docker compose -f stand/docker-compose.yml up -d --build      # поднять
+#   docker compose -f stand/docker-compose.yml down -v             # удалить вместе с данными
+name: sa-stand
+
+services:
+  api:
+    build: ./app
+    environment:
+      API_KEY: demo-key
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 3s
+      retries: 20
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: stand        # только для локального стенда
+      POSTGRES_DB: app
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "app"]
+      interval: 3s
+      retries: 20

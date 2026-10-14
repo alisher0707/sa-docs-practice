@@ -1,0 +1,10 @@
+node_modules/
+public/
+__pycache__/
+.DS_Store
+*.tmp
+~$*.docx
+.env
+dbml-error.log
+.hypothesis/
+.schemathesis/

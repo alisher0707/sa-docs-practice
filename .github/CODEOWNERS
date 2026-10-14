@@ -1,0 +1,17 @@
+# Кто обязан одобрять изменения. Включите «Require review from Code Owners»
+# в правиле защиты ветки main (Settings → Branches).
+# Замените @alisher0707 и группы на реальные логины / команды GitHub (@org/team).
+
+# По умолчанию — ведущий аналитик
+*                           @alisher0707
+
+# Процесс, шаблоны, правила API
+/PROCESS.md                 @alisher0707
+/templates/                 @alisher0707
+/.spectral.yaml             @alisher0707
+
+# Контракты API — аналитики + разработка (в банке: @org/sa-leads @org/dev-leads)
+/systems/*/api/             @alisher0707
+
+# Модели данных — аналитики + DBA (в банке: @org/sa-leads @org/dba)
+/systems/*/erd/             @alisher0707

@@ -1,0 +1,34 @@
+@startuml
+' ============================================================
+'  Шаблон sequence-диаграммы
+'  Файл: systems/<system>/diagrams/API-NNN.puml
+'  Правила:
+'   - номера стрелок (autonumber) = номера шагов в карточке метода, раздел 3
+'   - alt всегда с else; не вкладывать opt -> alt (ломает парсер plantuml.com)
+'   - для веб-рендера plantuml.com подписи латиницей; локально и в Confluence кириллица допустима
+'   - не добавлять компоненты, которых нет в архитектуре
+' ============================================================
+title API-NNN <Method name>
+autonumber "<b>[00]"
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+
+participant "<Consumer>" as cons
+participant "<Our service>" as svc
+participant "<Downstream system>" as down
+
+cons -> svc : GET /v1/<resource>?<param>\nX-Correlation-Id
+svc -> svc : validate (V-01..V-NN)
+alt invalid input
+  svc --> cons : 422 VALIDATION_ERROR
+else valid input
+  svc -> down : <operation> (timeout N s)
+  alt found
+    down --> svc : <data>
+    svc --> cons : 200 <response>
+  else not found
+    down --> svc : not found
+    svc --> cons : 404 <NOT_FOUND>
+  end
+end
+@enduml

@@ -1,0 +1,206 @@
+# ПРИМЕР заполненного контракта. Данные синтетические.
+openapi: 3.0.3
+info:
+  title: Example Client Info API
+  version: 1.1.0
+  description: |
+    Пример системы для демонстрации структуры репозитория.
+    Предоставляет партнёрам сведения о клиенте-юрлице или ИП и его счетах.
+
+    Карточки методов: `systems/example-system/methods/`. ERD: `systems/example-system/erd/client.dbml`.
+  contact:
+    name: Команда интеграций (пример)
+servers:
+  - url: https://api.example.local/example-system
+    description: Placeholder — реальные адреса окружений в репозитории не публикуются
+tags:
+  - name: Clients
+    description: Сведения о клиенте
+security:
+  - apiKey: []
+
+paths:
+  /v1/clients/{clientId}:
+    get:
+      tags: [Clients]
+      operationId: getClientInfo
+      summary: Сведения о клиенте
+      description: Логика и маппинг — карточка API-001.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ClientId'
+      responses:
+        '200':
+          description: Клиент найден
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientInfo'
+              examples:
+                legalEntity:
+                  summary: Юридическое лицо
+                  value:
+                    clientId: '300000001'
+                    clientType: LEGAL_ENTITY
+                    name: OOO «Primer Savdo»
+                    directorGender: FEMALE
+                    registeredAt: '2019-03-14'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ClientNotFound' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /v1/clients/{clientId}/accounts:
+    get:
+      tags: [Clients]
+      operationId: getClientAccounts
+      summary: Активные счета клиента
+      description: Логика и маппинг — карточка API-002. Добавлено в 1.1.0.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ClientId'
+      responses:
+        '200':
+          description: Список активных счетов (может быть пустым)
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Account' }
+              examples:
+                twoAccounts:
+                  value:
+                    items:
+                      - accountNumber: '20208000900000000001'
+                        currency: UZS
+                        isMain: true
+                        balance: { value: '1500000.00', currency: UZS }
+                      - accountNumber: '20208840900000000002'
+                        currency: USD
+                        isMain: false
+                        balance: { value: '120.50', currency: USD }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ClientNotFound' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Ключ выдаётся партнёру; дополнительно — allowlist IP
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema: { type: string, format: uuid }
+      example: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e
+    ClientId:
+      name: clientId
+      in: path
+      required: true
+      description: ИНН юрлица (9 цифр) или ПИНФЛ ИП (14 цифр)
+      schema:
+        type: string
+        pattern: '^(\d{9}|\d{14})$'
+      example: '300000001'
+
+  headers:
+    CorrelationId:
+      description: Эхо X-Correlation-Id или сгенерированный сервером
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Money:
+      type: object
+      required: [value, currency]
+      properties:
+        value: { type: string, pattern: '^-?\d{1,16}\.\d{2}$', example: '1500000.00' }
+        currency: { type: string, pattern: '^[A-Z]{3}$', example: UZS }
+
+    ClientInfo:
+      type: object
+      required: [clientId, clientType, name]
+      additionalProperties: false   # строгая схема: сверка заметит недокументированное поле (утечка ПДн)
+      properties:
+        clientId: { type: string }
+        clientType: { type: string, enum: [LEGAL_ENTITY, INDIVIDUAL_ENTREPRENEUR] }
+        name: { type: string, description: Наименование юрлица / ФИО ИП }
+        directorGender:
+          type: string
+          enum: [MALE, FEMALE, UNKNOWN]
+          description: Пол руководителя (для ИП — пол самого ИП)
+        registeredAt: { type: string, format: date }
+
+    Account:
+      type: object
+      required: [accountNumber, currency, isMain]
+      additionalProperties: false
+      properties:
+        accountNumber: { type: string, pattern: '^\d{20}$' }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        isMain: { type: boolean, description: Основной расчётный счёт }
+        balance: { $ref: '#/components/schemas/Money' }
+
+    Error:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code: { type: string, example: VALIDATION_ERROR }
+        message: { type: string }
+        correlationId: { type: string, format: uuid }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              issue: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Нет или неверный ключ
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: UNAUTHORIZED, message: Invalid API key, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    ClientNotFound:
+      description: Клиент не найден или не обслуживается банком
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: CLIENT_NOT_FOUND, message: Client not found, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }
+    Unprocessable:
+      description: Нарушены правила валидации
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: VALIDATION_ERROR
+            message: Request validation failed
+            correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e
+            details:
+              - { field: clientId, issue: must be 9 or 14 digits }
+    ServiceUnavailable:
+      description: Нижележащая система недоступна — можно повторить
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: DEPENDENCY_UNAVAILABLE, message: Core banking is unavailable, correlationId: 3f2a7b10-9d4e-4c8a-b6f1-2e5d8a0cc91e }

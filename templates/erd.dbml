@@ -1,0 +1,167 @@
+// =====================================================================
+//  ERD-шаблон для dbdiagram.io (DBML)
+//  Файл в git: systems/<system>/erd/<domain>.dbml   ·   один домен/сервис = один файл
+//
+//  КОНВЕНЦИИ
+//  - Имена: snake_case, таблицы в единственном числе (payment, не payments)
+//  - PK: id uuid (UUIDv4/v7). Числовые автоинкременты наружу не отдаём
+//  - Деньги: numeric(18,2) + currency char(3) ISO 4217. Никаких float
+//  - Время: timestamptz, хранить в UTC, отображать в Asia/Tashkent
+//  - Статусы: enum + таблица истории переходов (<entity>_status_history)
+//  - Обязательные служебные поля: created_at, updated_at, version
+//  - ПДн / банковская тайна: в note колонки пометка [PII] / [SECRET] / [PCI]
+//  - Удаление: soft delete (deleted_at) для бизнес-сущностей; аудит не удаляется
+//  - Каждое изменение схемы = PR + ссылка на ТЗ (п. 3.9) + миграция
+//  - Плейсхолдеры: domain_name, entity, <...> — заменить. Блоки EXAMPLE — удалить
+// =====================================================================
+
+Project domain_name {
+  database_type: 'PostgreSQL'
+  Note: '''
+  **Домен:** <domain>
+  **Сервис-владелец:** <service-name>
+  **Версия схемы:** 0.1.0
+  **Связанные ТЗ:** <ТЗ-КОД-NN>
+  '''
+}
+
+// ---------------------------------------------------------------------
+//  ENUMS
+// ---------------------------------------------------------------------
+Enum entity_status {
+  CREATED   [note: 'Создана, ещё не отправлена во внешнюю систему']
+  PENDING   [note: 'Отправлена, исход неизвестен — требует статус-запроса']
+  SUCCEEDED [note: 'Финальный: успех']
+  CANCELED  [note: 'Финальный: отказ / отмена']
+}
+
+// ---------------------------------------------------------------------
+//  ОСНОВНАЯ СУЩНОСТЬ (EXAMPLE — переименовать под домен)
+// ---------------------------------------------------------------------
+Table entity {
+  id               uuid          [pk, note: 'Внутренний идентификатор']
+  external_id      varchar(64)   [note: 'ID во внешней системе (RRN / reference). Заполняется после ответа']
+  customer_id      uuid          [not null, note: 'Единый ID клиента']
+  status           entity_status [not null, default: 'CREATED']
+  amount           numeric(18,2) [not null, note: 'Сумма в основных единицах валюты']
+  currency         char(3)       [not null, note: 'ISO 4217 (UZS, USD)']
+  masked_pan       varchar(19)   [note: '[PCI] Только 6+4. Полный PAN в этой БД не хранится']
+  phone            varchar(16)   [note: '[PII] E.164; в логах маскируется']
+  correlation_id   uuid          [not null, note: 'X-Correlation-Id запроса-инициатора']
+  created_at       timestamptz   [not null, default: `now()`]
+  updated_at       timestamptz   [not null, default: `now()`]
+  deleted_at       timestamptz   [note: 'Soft delete']
+  version          int           [not null, default: 0, note: 'Оптимистическая блокировка']
+
+  indexes {
+    customer_id
+    (status, created_at) [name: 'ix_entity_status_created', note: 'Выборка зависших PENDING фоновым job']
+    external_id          [unique, name: 'ux_entity_external_id']
+    correlation_id
+  }
+
+  Note: '''
+  <Назначение сущности, 1–2 предложения>.
+  Финальные статусы: SUCCEEDED, CANCELED — изменению не подлежат.
+  Срок хранения: <N лет — требует проверки комплаенса>.
+  '''
+}
+
+Table entity_status_history {
+  id           bigint        [pk, increment]
+  entity_id    uuid          [not null, ref: > entity.id]
+  from_status  entity_status [note: 'NULL для первой записи']
+  to_status    entity_status [not null]
+  reason_code  varchar(64)   [note: 'Нормализованный код причины']
+  actor        varchar(64)   [not null, note: 'system | user:<id> | job:<name>']
+  created_at   timestamptz   [not null, default: `now()`]
+
+  indexes {
+    (entity_id, created_at)
+  }
+  Note: 'Append-only. UPDATE/DELETE запрещены правами БД'
+}
+
+// ---------------------------------------------------------------------
+//  ИНФРАСТРУКТУРНЫЕ ТАБЛИЦЫ (типовые, оставить если используются)
+// ---------------------------------------------------------------------
+Table idempotency_record {
+  idempotency_key  uuid         [not null, note: 'Idempotency-Key от вызывающей стороны']
+  operation        varchar(64)  [not null, note: 'Тип операции: create_entity, refund ...']
+  request_hash     char(64)     [not null, note: 'SHA-256 тела запроса. Тот же ключ + другой hash → 422']
+  entity_id        uuid         [ref: > entity.id]
+  response_code    smallint     [note: 'HTTP-код сохранённого ответа; NULL — запрос ещё обрабатывается']
+  response_body    jsonb        [note: 'Без PII/PCI сверх того, что уже отдавалось клиенту']
+  created_at       timestamptz  [not null, default: `now()`]
+  expires_at       timestamptz  [not null, note: 'TTL ключа, напр. created_at + 24h']
+
+  indexes {
+    (idempotency_key, operation) [pk]
+    expires_at [note: 'Очистка просроченных']
+  }
+}
+
+Table outbox_event {
+  id              uuid         [pk]
+  aggregate_type  varchar(64)  [not null, note: 'entity']
+  aggregate_id    uuid         [not null]
+  event_type      varchar(128) [not null, note: '<domain>.<entity>.<event>, напр. payment.succeeded']
+  payload         jsonb        [not null]
+  correlation_id  uuid         [not null]
+  created_at      timestamptz  [not null, default: `now()`]
+  published_at    timestamptz  [note: 'NULL — ещё не отправлено в брокер']
+  attempts        int          [not null, default: 0]
+
+  indexes {
+    (published_at, created_at) [name: 'ix_outbox_unpublished']
+  }
+  Note: 'Transactional Outbox: пишется в одной транзакции с изменением entity'
+}
+
+Table audit_log {
+  id              bigint       [pk, increment]
+  occurred_at     timestamptz  [not null, default: `now()`]
+  actor           varchar(64)  [not null]
+  action          varchar(64)  [not null, note: 'CREATE | UPDATE | VIEW_SENSITIVE | EXPORT ...']
+  object_type     varchar(64)  [not null]
+  object_id       varchar(64)  [not null]
+  changes         jsonb        [note: 'Diff без значений [PII]/[PCI] полей — только факт изменения']
+  correlation_id  uuid
+  source_ip       inet         [note: '[PII]']
+
+  indexes {
+    (object_type, object_id)
+    occurred_at
+  }
+  Note: 'Append-only. Срок хранения — <требует проверки комплаенса>'
+}
+
+// ---------------------------------------------------------------------
+//  СПРАВОЧНИК (EXAMPLE)
+// ---------------------------------------------------------------------
+Table ref_currency {
+  code        char(3)     [pk, note: 'ISO 4217 alpha']
+  numeric     char(3)     [not null, unique, note: 'ISO 4217 numeric (860 = UZS)']
+  minor_unit  smallint    [not null, note: 'Знаков после запятой']
+  is_active   boolean     [not null, default: true]
+}
+
+Ref: entity.currency > ref_currency.code
+
+// ---------------------------------------------------------------------
+//  ГРУППЫ (для читаемости диаграммы)
+// ---------------------------------------------------------------------
+TableGroup core {
+  entity
+  entity_status_history
+}
+
+TableGroup infrastructure {
+  idempotency_record
+  outbox_event
+  audit_log
+}
+
+TableGroup reference {
+  ref_currency
+}

@@ -145,6 +145,7 @@ components:
           enum: [MALE, FEMALE, UNKNOWN]
           description: Пол руководителя (для ИП — пол самого ИП)
         registeredAt: { type: string, format: date }
+        middleName: { type: string, description: Отчество руководителя }
 
     Account:
       type: object
